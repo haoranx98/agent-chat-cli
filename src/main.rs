@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use reqwest::StatusCode;
+use rustyline::error::ReadlineError;
+use rustyline::DefaultEditor;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -149,23 +151,25 @@ async fn run_chat(config: &AppConfig) -> Result<(), Box<dyn std::error::Error>> 
     println!("Agent Chat");
     println!("服务端: {endpoint}");
     println!("模型: {}", config.model);
-    println!("输入消息开始对话，输入 /clear 清空上下文，输入 /quit 或 Ctrl-D 退出。\n");
+    println!("输入消息开始对话，上下方向键切换历史输入，输入 /clear 清空上下文，输入 /quit 或 Ctrl-D 退出。\n");
+
+    let mut editor = DefaultEditor::new()?;
 
     loop {
-        print!("你> ");
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        let read = io::stdin().read_line(&mut input)?;
-        if read == 0 {
-            println!();
-            break;
-        }
+        let input = match editor.readline("你> ") {
+            Ok(input) => input,
+            Err(ReadlineError::Interrupted | ReadlineError::Eof) => {
+                println!();
+                break;
+            }
+            Err(error) => return Err(error.into()),
+        };
 
         let input = input.trim();
         if input.is_empty() {
             continue;
         }
+        editor.add_history_entry(input)?;
         match input {
             "/quit" | "/exit" => break,
             "/clear" => {
