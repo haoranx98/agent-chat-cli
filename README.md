@@ -18,6 +18,23 @@ cargo run -- --ip 127.0.0.1 --port 8031 chat
 agent-chat -i 192.168.1.20 -p 8031 -m Qwen2.5-0.5B-Instruct
 ```
 
+也可以通过 YAML 文件配置：
+
+```bash
+agent-chat --config config.yaml chat
+```
+
+配置模板见 [`config.example.yaml`](config.example.yaml)。参数优先级为：命令行参数 > YAML 配置文件 > 内置默认值。YAML 中未填写的参数会继续使用内置默认值。
+
+支持的 YAML 配置项：
+
+```yaml
+ip: 127.0.0.1
+port: 8031
+model: Qwen2.5-0.5B-Instruct
+timeout: 300
+```
+
 对话中：
 
 - `/clear` 清空历史消息；

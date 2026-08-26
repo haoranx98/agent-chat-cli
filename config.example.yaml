@@ -1,0 +1,15 @@
+# agent-chat 配置模板
+# 使用方式：agent-chat --config config.example.yaml chat
+
+# 服务端 IP 或主机名
+ip: 127.0.0.1
+
+# 服务端端口
+port: 8031
+
+# 请求使用的模型名称
+model: Qwen2.5-0.5B-Instruct
+
+# 请求超时时间，单位：秒
+timeout: 300
+

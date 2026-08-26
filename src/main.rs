@@ -1,4 +1,5 @@
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
@@ -13,21 +14,25 @@ use serde_json::Value;
     about = "与 OpenAI 兼容的 Agent 服务进行命令行对话"
 )]
 struct Cli {
+    /// YAML 配置文件路径
+    #[arg(short = 'c', long, value_name = "FILE", global = true)]
+    config: Option<PathBuf>,
+
     /// 服务端 IP 或主机名，例如 127.0.0.1
-    #[arg(short = 'i', long, default_value = "127.0.0.1", global = true)]
-    ip: String,
+    #[arg(short = 'i', long, global = true)]
+    ip: Option<String>,
 
     /// 服务端端口
-    #[arg(short, long, default_value_t = 8031, global = true)]
-    port: u16,
+    #[arg(short, long, global = true)]
+    port: Option<u16>,
 
     /// 请求使用的模型名称
-    #[arg(short, long, default_value = "Qwen2.5-0.5B-Instruct", global = true)]
-    model: String,
+    #[arg(short, long, global = true)]
+    model: Option<String>,
 
     /// 请求超时时间（秒）
-    #[arg(long, default_value_t = 300, global = true)]
-    timeout: u64,
+    #[arg(long, global = true)]
+    timeout: Option<u64>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -37,6 +42,55 @@ struct Cli {
 enum Command {
     /// 开启交互式对话模式
     Chat,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct FileConfig {
+    ip: Option<String>,
+    port: Option<u16>,
+    model: Option<String>,
+    timeout: Option<u64>,
+}
+
+#[derive(Debug)]
+struct AppConfig {
+    ip: String,
+    port: u16,
+    model: String,
+    timeout: u64,
+}
+
+impl AppConfig {
+    fn from_cli(cli: &Cli) -> Result<Self, Box<dyn std::error::Error>> {
+        let file_config = cli
+            .config
+            .as_deref()
+            .map(load_file_config)
+            .transpose()?
+            .unwrap_or_default();
+
+        Ok(Self {
+            ip: cli
+                .ip
+                .clone()
+                .or(file_config.ip)
+                .unwrap_or_else(|| "127.0.0.1".to_owned()),
+            port: cli.port.or(file_config.port).unwrap_or(8031),
+            model: cli
+                .model
+                .clone()
+                .or(file_config.model)
+                .unwrap_or_else(|| "Qwen2.5-0.5B-Instruct".to_owned()),
+            timeout: cli.timeout.or(file_config.timeout).unwrap_or(300),
+        })
+    }
+}
+
+fn load_file_config(path: &Path) -> Result<FileConfig, Box<dyn std::error::Error>> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|error| format!("无法读取配置文件 {}: {error}", path.display()))?;
+    serde_yaml::from_str(&content)
+        .map_err(|error| format!("无法解析 YAML 配置文件 {}: {error}", path.display()).into())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,11 +119,18 @@ struct Choice {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+    let config = match AppConfig::from_cli(&cli) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("配置错误: {error}");
+            std::process::exit(1);
+        }
+    };
 
     // 省略子命令时也进入对话模式，方便直接执行 agent-chat。
     match cli.command.as_ref().unwrap_or(&Command::Chat) {
         Command::Chat => {
-            if let Err(error) = run_chat(&cli).await {
+            if let Err(error) = run_chat(&config).await {
                 eprintln!("错误: {error}");
                 std::process::exit(1);
             }
@@ -77,17 +138,17 @@ async fn main() {
     }
 }
 
-async fn run_chat(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let base = format_base_url(&cli.ip, cli.port);
+async fn run_chat(config: &AppConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let base = format_base_url(&config.ip, config.port);
     let endpoint = format!("{base}/v1/chat/completions");
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(cli.timeout))
+        .timeout(Duration::from_secs(config.timeout))
         .build()?;
     let mut messages = Vec::new();
 
     println!("Agent Chat");
     println!("服务端: {endpoint}");
-    println!("模型: {}", cli.model);
+    println!("模型: {}", config.model);
     println!("输入消息开始对话，输入 /clear 清空上下文，输入 /quit 或 Ctrl-D 退出。\n");
 
     loop {
@@ -122,7 +183,7 @@ async fn run_chat(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 
         print!("助手> ");
         io::stdout().flush()?;
-        match send_message(&client, &endpoint, &cli.model, &mut messages).await {
+        match send_message(&client, &endpoint, &config.model, &mut messages).await {
             Ok(answer) => {
                 println!("{answer}\n");
                 messages.push(Message {
@@ -250,5 +311,30 @@ mod tests {
         assert!(drop_oldest_turn(&mut messages));
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].content, "two");
+    }
+
+    #[test]
+    fn command_line_values_override_yaml_and_defaults_fill_missing_values() {
+        let path = std::env::temp_dir().join(format!(
+            "agent-chat-config-test-{}.yaml",
+            std::process::id()
+        ));
+        std::fs::write(&path, "ip: 192.168.1.10\nport: 9000\nmodel: test-model\n").unwrap();
+
+        let cli = Cli {
+            config: Some(path.clone()),
+            ip: Some("10.0.0.2".into()),
+            port: None,
+            model: None,
+            timeout: Some(10),
+            command: None,
+        };
+        let config = AppConfig::from_cli(&cli).unwrap();
+
+        assert_eq!(config.ip, "10.0.0.2");
+        assert_eq!(config.port, 9000);
+        assert_eq!(config.model, "test-model");
+        assert_eq!(config.timeout, 10);
+        std::fs::remove_file(path).unwrap();
     }
 }
