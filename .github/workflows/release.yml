@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # 手动补发布时可以构建指定的历史 tag；普通 push 则构建当前 ref。
           ref: ${{ inputs.tag || github.ref }}
