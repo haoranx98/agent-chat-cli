@@ -79,6 +79,8 @@ target/x86_64-unknown-linux-musl/release/agent-chat
 
 该程序使用 Rustls，不依赖 OpenSSL；在工具链正确配置时可生成静态 musl 可执行文件。
 
+Release 构建已启用体积优化：使用 size 优先优化、LTO、单 codegen unit、`panic = "abort"`，并通过 `strip = "symbols"` 移除调试符号表。当前构建产物适合发布和部署，不包含调试信息；调试时请使用默认的 debug 构建。
+
 ## GitHub Actions 自动发布
 
 修改 `Cargo.toml` 中的 `[package] version` 并推送到 `main` 后，GitHub Actions 会自动：
