@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use reqwest::StatusCode;
-use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
+use rustyline::error::ReadlineError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -46,12 +46,64 @@ enum Command {
     Chat,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct FileConfig {
     ip: Option<String>,
     port: Option<u16>,
     model: Option<String>,
     timeout: Option<u64>,
+}
+
+impl FileConfig {
+    fn defaults() -> Self {
+        Self {
+            ip: Some("127.0.0.1".to_owned()),
+            port: Some(8031),
+            model: Some("Qwen2.5-0.5B-Instruct".to_owned()),
+            timeout: Some(300),
+        }
+    }
+
+    fn fill_defaults(&mut self) {
+        let defaults = Self::defaults();
+        if self.ip.is_none() {
+            self.ip = defaults.ip;
+        }
+        if self.port.is_none() {
+            self.port = defaults.port;
+        }
+        if self.model.is_none() {
+            self.model = defaults.model;
+        }
+        if self.timeout.is_none() {
+            self.timeout = defaults.timeout;
+        }
+    }
+
+    fn apply_cli(&mut self, cli: &Cli) {
+        if let Some(ip) = &cli.ip {
+            self.ip = Some(ip.clone());
+        }
+        if let Some(port) = cli.port {
+            self.port = Some(port);
+        }
+        if let Some(model) = &cli.model {
+            self.model = Some(model.clone());
+        }
+        if let Some(timeout) = cli.timeout {
+            self.timeout = Some(timeout);
+        }
+    }
+
+    fn into_app_config(mut self) -> AppConfig {
+        self.fill_defaults();
+        AppConfig {
+            ip: self.ip.expect("default ip must exist"),
+            port: self.port.expect("default port must exist"),
+            model: self.model.expect("default model must exist"),
+            timeout: self.timeout.expect("default timeout must exist"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -64,28 +116,47 @@ struct AppConfig {
 
 impl AppConfig {
     fn from_cli(cli: &Cli) -> Result<Self, Box<dyn std::error::Error>> {
-        let file_config = cli
-            .config
-            .as_deref()
-            .map(load_file_config)
-            .transpose()?
-            .unwrap_or_default();
+        let config_path = config_path(cli)?;
+        let config_exists = config_path.exists();
+        let has_cli_overrides = cli.has_runtime_overrides();
 
-        Ok(Self {
-            ip: cli
-                .ip
-                .clone()
-                .or(file_config.ip)
-                .unwrap_or_else(|| "127.0.0.1".to_owned()),
-            port: cli.port.or(file_config.port).unwrap_or(8031),
-            model: cli
-                .model
-                .clone()
-                .or(file_config.model)
-                .unwrap_or_else(|| "Qwen2.5-0.5B-Instruct".to_owned()),
-            timeout: cli.timeout.or(file_config.timeout).unwrap_or(300),
-        })
+        let mut file_config = if config_exists {
+            load_file_config(&config_path)?
+        } else {
+            FileConfig::default()
+        };
+
+        if has_cli_overrides || !config_exists {
+            file_config.apply_cli(cli);
+            file_config.fill_defaults();
+            save_file_config(&config_path, &file_config)?;
+            println!(
+                "配置文件已{}: {}",
+                if config_exists { "更新" } else { "生成" },
+                config_path.display()
+            );
+        }
+
+        Ok(file_config.into_app_config())
     }
+}
+
+impl Cli {
+    fn has_runtime_overrides(&self) -> bool {
+        self.ip.is_some() || self.port.is_some() || self.model.is_some() || self.timeout.is_some()
+    }
+}
+
+fn config_path(cli: &Cli) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Some(path) = &cli.config {
+        return Ok(path.clone());
+    }
+
+    let executable = std::env::current_exe()?;
+    let directory = executable
+        .parent()
+        .ok_or_else(|| "无法确定可执行文件所在目录".to_owned())?;
+    Ok(directory.join("config.yaml"))
 }
 
 fn load_file_config(path: &Path) -> Result<FileConfig, Box<dyn std::error::Error>> {
@@ -93,6 +164,18 @@ fn load_file_config(path: &Path) -> Result<FileConfig, Box<dyn std::error::Error
         .map_err(|error| format!("无法读取配置文件 {}: {error}", path.display()))?;
     serde_yaml::from_str(&content)
         .map_err(|error| format!("无法解析 YAML 配置文件 {}: {error}", path.display()).into())
+}
+
+fn save_file_config(path: &Path, config: &FileConfig) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("无法创建配置文件目录 {}: {error}", parent.display()))?;
+    }
+    let content = serde_yaml::to_string(config)
+        .map_err(|error| format!("无法生成 YAML 配置文件 {}: {error}", path.display()))?;
+    std::fs::write(path, content)
+        .map_err(|error| format!("无法写入配置文件 {}: {error}", path.display()))?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,7 +234,9 @@ async fn run_chat(config: &AppConfig) -> Result<(), Box<dyn std::error::Error>> 
     println!("Agent Chat");
     println!("服务端: {endpoint}");
     println!("模型: {}", config.model);
-    println!("输入消息开始对话，上下方向键切换历史输入，输入 /clear 清空上下文，输入 /quit 或 Ctrl-D 退出。\n");
+    println!(
+        "输入消息开始对话，上下方向键切换历史输入，输入 /clear 清空上下文，输入 /quit 或 Ctrl-D 退出。\n"
+    );
 
     let mut editor = DefaultEditor::new()?;
 
@@ -340,5 +425,30 @@ mod tests {
         assert_eq!(config.model, "test-model");
         assert_eq!(config.timeout, 10);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn cli_overrides_are_applied_to_file_config() {
+        let mut config = FileConfig {
+            ip: Some("127.0.0.1".into()),
+            port: Some(8031),
+            model: Some("old-model".into()),
+            timeout: Some(300),
+        };
+        let cli = Cli {
+            config: None,
+            ip: None,
+            port: Some(9000),
+            model: Some("new-model".into()),
+            timeout: None,
+            command: None,
+        };
+
+        config.apply_cli(&cli);
+        let config = config.into_app_config();
+        assert_eq!(config.ip, "127.0.0.1");
+        assert_eq!(config.port, 9000);
+        assert_eq!(config.model, "new-model");
+        assert_eq!(config.timeout, 300);
     }
 }

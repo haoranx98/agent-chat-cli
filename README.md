@@ -24,7 +24,16 @@ agent-chat -i 192.168.1.20 -p 8031 -m Qwen2.5-0.5B-Instruct
 agent-chat --config config.yaml chat
 ```
 
-配置模板见 [`config.example.yaml`](config.example.yaml)。参数优先级为：命令行参数 > YAML 配置文件 > 内置默认值。YAML 中未填写的参数会继续使用内置默认值。
+配置模板见 [`config.example.yaml`](config.example.yaml)。如果不指定 `--config`，程序会使用可执行文件同级目录下的 `config.yaml`。
+
+配置文件行为如下：
+
+- 没有配置文件、也没有命令行参数：使用内置默认值，并自动生成 `config.yaml`；
+- 没有配置文件、指定了命令行参数：使用命令行参数和默认值生成 `config.yaml`，然后运行；
+- 已有配置文件、没有指定命令行参数：读取配置文件运行，缺失字段使用默认值；
+- 已有配置文件、指定了命令行参数：命令行参数覆盖对应配置，并回写配置文件后运行。
+
+配置文件路径和命令行参数示例：
 
 支持的 YAML 配置项：
 
