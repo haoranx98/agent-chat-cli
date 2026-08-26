@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build Linux musl release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Read package version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -n 1)"
+          if [[ -z "$version" ]]; then
+            echo "Unable to read package version from Cargo.toml" >&2
+            exit 1
+          fi
+
+          previous_version=""
+          if git rev-parse HEAD^ >/dev/null 2>&1; then
+            previous_version="$(git show HEAD^:Cargo.toml 2>/dev/null | sed -nE 's/^version = "([^"]+)"/\1/p' | head -n 1 || true)"
+          fi
+
+          changed=false
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" || "$version" != "$previous_version" ]]; then
+            changed=true
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+          echo "Current version: $version"
+          echo "Previous version: ${previous_version:-<none>}"
+          echo "Version changed: $changed"
+
+      - name: Check whether release already exists
+        id: release
+        if: steps.version.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if gh release view "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release ${{ steps.version.outputs.tag }} already exists; skipping."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install musl toolchain
+        if: steps.version.outputs.changed == 'true' && steps.release.outputs.exists != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
+
+      - name: Build static Linux binary
+        if: steps.version.outputs.changed == 'true' && steps.release.outputs.exists != 'true'
+        run: cargo build --locked --release --target x86_64-unknown-linux-musl
+
+      - name: Package and verify artifact
+        id: artifact
+        if: steps.version.outputs.changed == 'true' && steps.release.outputs.exists != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          binary="target/x86_64-unknown-linux-musl/release/agent-chat"
+          artifact="agent-chat-${{ steps.version.outputs.tag }}-x86_64-unknown-linux-musl"
+          cp "$binary" "$artifact"
+          sha256sum "$artifact" > "$artifact.sha256"
+          file "$artifact"
+          if ldd "$artifact" 2>&1 | grep -qiE 'not a dynamic executable|statically linked'; then
+            echo "Static binary verified."
+          else
+            echo "The built binary is not statically linked." >&2
+            ldd "$artifact" || true
+            exit 1
+          fi
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        if: steps.version.outputs.changed == 'true' && steps.release.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            "${{ steps.artifact.outputs.artifact }}" \
+            "${{ steps.artifact.outputs.artifact }}.sha256" \
+            --title "agent-chat ${{ steps.version.outputs.tag }}" \
+            --generate-notes
+
