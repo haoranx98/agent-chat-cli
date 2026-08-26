@@ -4,7 +4,14 @@ on:
   push:
     branches:
       - main
+    tags:
+      - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: '要构建的版本标签，例如 v0.1.0；留空则使用当前版本'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -17,65 +24,88 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          # 手动补发布时可以构建指定的历史 tag；普通 push 则构建当前 ref。
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
 
-      - name: Read package version
+      - name: Determine release version
         id: version
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
 
-          version="$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -n 1)"
-          if [[ -z "$version" ]]; then
+          package_version="$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -n 1)"
+          if [[ -z "$package_version" ]]; then
             echo "Unable to read package version from Cargo.toml" >&2
             exit 1
           fi
 
-          previous_version=""
-          if git rev-parse HEAD^ >/dev/null 2>&1; then
+          should_release=false
+          tag="v$package_version"
+
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag="$GITHUB_REF_NAME"
+            should_release=true
+          elif [[ "$EVENT_NAME" == workflow_dispatch && -n "$INPUT_TAG" ]]; then
+            tag="${INPUT_TAG#v}"
+            tag="v$tag"
+            should_release=true
+          elif [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            should_release=true
+          elif git rev-parse HEAD^ >/dev/null 2>&1; then
             previous_version="$(git show HEAD^:Cargo.toml 2>/dev/null | sed -nE 's/^version = "([^"]+)"/\1/p' | head -n 1 || true)"
+            if [[ "$package_version" != "$previous_version" ]]; then
+              should_release=true
+            fi
+            echo "Previous package version: ${previous_version:-<none>}"
+          else
+            should_release=true
           fi
 
-          changed=false
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" || "$version" != "$previous_version" ]]; then
-            changed=true
+          tag_version="${tag#v}"
+          if [[ "$tag_version" != "$package_version" ]]; then
+            echo "Release tag $tag does not match Cargo.toml version $package_version" >&2
+            exit 1
           fi
 
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
-          echo "changed=$changed" >> "$GITHUB_OUTPUT"
-          echo "Current version: $version"
-          echo "Previous version: ${previous_version:-<none>}"
-          echo "Version changed: $changed"
+          echo "package_version=$package_version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "should_release=$should_release" >> "$GITHUB_OUTPUT"
+          echo "Package version: $package_version"
+          echo "Release tag: $tag"
+          echo "Should release: $should_release"
 
       - name: Check whether release already exists
-        id: release
-        if: steps.version.outputs.changed == 'true'
+        id: existing
+        if: steps.version.outputs.should_release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           if gh release view "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Release ${{ steps.version.outputs.tag }} already exists; skipping."
+            echo "Release ${{ steps.version.outputs.tag }} already exists; assets will be updated."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Install musl toolchain
-        if: steps.version.outputs.changed == 'true' && steps.release.outputs.exists != 'true'
+        if: steps.version.outputs.should_release == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
           rustup target add x86_64-unknown-linux-musl
 
       - name: Build static Linux binary
-        if: steps.version.outputs.changed == 'true' && steps.release.outputs.exists != 'true'
+        if: steps.version.outputs.should_release == 'true'
         run: cargo build --locked --release --target x86_64-unknown-linux-musl
 
       - name: Package and verify artifact
         id: artifact
-        if: steps.version.outputs.changed == 'true' && steps.release.outputs.exists != 'true'
+        if: steps.version.outputs.should_release == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -95,7 +125,7 @@ jobs:
           echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
-        if: steps.version.outputs.changed == 'true' && steps.release.outputs.exists != 'true'
+        if: steps.version.outputs.should_release == 'true' && steps.existing.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -105,3 +135,12 @@ jobs:
             --title "agent-chat ${{ steps.version.outputs.tag }}" \
             --generate-notes
 
+      - name: Upload assets to existing GitHub Release
+        if: steps.version.outputs.should_release == 'true' && steps.existing.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ steps.version.outputs.tag }}" \
+            "${{ steps.artifact.outputs.artifact }}" \
+            "${{ steps.artifact.outputs.artifact }}.sha256" \
+            --clobber

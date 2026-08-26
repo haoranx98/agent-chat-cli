@@ -55,7 +55,7 @@ target/x86_64-unknown-linux-musl/release/agent-chat
 1. 安装 musl 工具链；
 2. 构建 `x86_64-unknown-linux-musl` 静态可执行文件；
 3. 生成 SHA256 校验文件；
-4. 创建对应的 `vX.Y.Z` GitHub Release。
+4. 创建对应的 `vX.Y.Z` GitHub Release 并上传可执行文件。
 
 发布文件名类似：
 
@@ -65,3 +65,5 @@ agent-chat-v0.2.0-x86_64-unknown-linux-musl.sha256
 ```
 
 工作流文件位于 `.github/workflows/release.yml`，也可以通过 GitHub Actions 的 `workflow_dispatch` 手动触发。
+
+工作流也支持直接推送 `vX.Y.Z` 标签，或者在 Actions 页面手动输入已有标签来补传 Release 资产。
