@@ -34,6 +34,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -69,6 +70,17 @@ jobs:
           if [[ "$tag_version" != "$package_version" ]]; then
             echo "Release tag $tag does not match Cargo.toml version $package_version" >&2
             exit 1
+          fi
+
+          # 如果已有 Release 但缺少当前版本的二进制，即使 Cargo.toml 版本未变化，
+          # 也执行一次补发布。这可以修复历史上只有源码压缩包的 Release。
+          if [[ "$should_release" == false && "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]]; then
+            artifact="agent-chat-${tag}-x86_64-unknown-linux-musl"
+            assets="$(gh release view "$tag" --json assets --jq '.assets[].name' 2>/dev/null || true)"
+            if ! grep -Fqx "$artifact" <<< "$assets"; then
+              should_release=true
+              echo "Release $tag is missing $artifact; starting an asset backfill."
+            fi
           fi
 
           echo "package_version=$package_version" >> "$GITHUB_OUTPUT"
