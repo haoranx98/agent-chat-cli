@@ -10,6 +10,11 @@ port: 8031
 # 请求使用的模型名称
 model: Qwen2.5-0.5B-Instruct
 
+# 可选：系统提示词，用于限定测试助手行为
+# system: 你是一个 NPU 推理测试助手，请客观报告输出结果。
+
 # 请求超时时间，单位：秒
 timeout: 300
 
+# 是否启用 SSE 流式输出
+stream: false

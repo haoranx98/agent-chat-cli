@@ -13,7 +13,7 @@ pub async fn run(config: &AppConfig) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(config.timeout))
         .build()?;
-    let mut messages = Vec::new();
+    let mut messages = initial_messages(config);
     let mut editor = DefaultEditor::new()?;
 
     println!("Agent Chat");
@@ -42,7 +42,7 @@ pub async fn run(config: &AppConfig) -> Result<(), Box<dyn std::error::Error>> {
         match input {
             "/quit" | "/exit" => break,
             "/clear" => {
-                messages.clear();
+                clear_messages(&mut messages);
                 println!("[已清空对话上下文]");
                 continue;
             }
@@ -56,9 +56,27 @@ pub async fn run(config: &AppConfig) -> Result<(), Box<dyn std::error::Error>> {
 
         print!("助手> ");
         io::stdout().flush()?;
-        match api::send_message(&client, &endpoint, &config.model, &mut messages).await {
+        let mut streamed = false;
+        match api::send_message(
+            &client,
+            &endpoint,
+            &config.model,
+            &mut messages,
+            config.stream,
+            |chunk| {
+                streamed = true;
+                print!("{chunk}");
+                let _ = io::stdout().flush();
+            },
+        )
+        .await
+        {
             Ok(answer) => {
-                println!("{answer}\n");
+                if streamed {
+                    println!("\n");
+                } else {
+                    println!("{answer}\n");
+                }
                 messages.push(Message {
                     role: "assistant".to_owned(),
                     content: answer,
@@ -75,6 +93,30 @@ pub async fn run(config: &AppConfig) -> Result<(), Box<dyn std::error::Error>> {
 
     println!("再见！");
     Ok(())
+}
+
+fn initial_messages(config: &AppConfig) -> Vec<Message> {
+    config
+        .system
+        .as_ref()
+        .map(|system| {
+            vec![Message {
+                role: "system".to_owned(),
+                content: system.clone(),
+            }]
+        })
+        .unwrap_or_default()
+}
+
+fn clear_messages(messages: &mut Vec<Message>) {
+    if messages
+        .first()
+        .is_some_and(|message| message.role == "system")
+    {
+        messages.truncate(1);
+    } else {
+        messages.clear();
+    }
 }
 
 fn format_base_url(ip: &str, port: u16) -> String {

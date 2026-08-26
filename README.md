@@ -1,6 +1,6 @@
 # agent-chat
 
-一个使用 Rust 编写的 OpenAI 兼容接口 CLI 对话客户端。默认请求：
+一个使用 Rust 编写的 OpenAI 兼容接口 CLI 测试助手，用于检查 NPU 板卡上的推理服务是否正常产生输出。默认请求：
 
 ```text
 http://127.0.0.1:8031/v1/chat/completions
@@ -41,8 +41,12 @@ agent-chat --config config.yaml chat
 ip: 127.0.0.1
 port: 8031
 model: Qwen2.5-0.5B-Instruct
+# system: 你是一个 NPU 推理测试助手，请客观报告输出结果。
 timeout: 300
+stream: false
 ```
+
+其中 `system` 为可选的系统提示词，`stream` 控制是否使用 OpenAI 兼容的 SSE 流式输出。
 
 对话中：
 
@@ -91,6 +95,6 @@ agent-chat-v0.2.0-x86_64-unknown-linux-musl
 agent-chat-v0.2.0-x86_64-unknown-linux-musl.sha256
 ```
 
-工作流文件位于 `.github/workflows/release.yml`，也可以通过 GitHub Actions 的 `workflow_dispatch` 手动触发。
+工作流文件位于 `.github/workflows/release.yml`，也可以通过 GitHub Actions 的 `workflow_dispatch` 手动触发。`.github/workflows/ci.yml` 会独立执行格式检查、Clippy 和测试。
 
-工作流也支持直接推送 `vX.Y.Z` 标签，或者在 Actions 页面手动输入已有标签来补传 Release 资产。
+Release 工作流只在 `main` 推送时根据版本号变化自动运行，也可以在 Actions 页面手动输入已有标签来补传 Release 资产；同一版本的构建通过并发控制串行执行。
